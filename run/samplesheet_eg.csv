@@ -1,0 +1,2 @@
+ID,bam,ref_gtf,ref_fasta,outFolder
+L76759,/n/analysis/Ozel/cml/MOLNG-4340/EA210589/L76759_segmented.bam,/n/core/Bioinformatics/analysis/Ozel/cml/cbio.cml.103/data/GENOMEs/BDGP6.88.modifed.agat_fixed.sorted.gtf,/n/analysis/genomes/Drosophila_melanogaster/BDGP6.46/Drosophila_melanogaster.BDGP6.46.fa,/n/core/Bioinformatics/analysis/CompBio/boweny/nf-Pipeline/ISOSEQ/isoseq_sc/test/

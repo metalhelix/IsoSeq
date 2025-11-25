@@ -1,0 +1,175 @@
+---
+title: "IsoSeq Analysis Report - Isofrom Level"
+output:
+  html_document:
+    code_folding: show
+params:
+  seurat_dir: ""
+  saturation_file: ""
+  output_dir: ""
+---
+
+### Initial QC for IsoSeq
+</br>
+
+**Table of basic QC values** </br>
+```{r load, echo=FALSE, message=FALSE, results="hide", warning=FALSE}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(pander)
+library(knitr)
+library(rmarkdown)
+library(ggplot2)
+library(tidyr)
+
+```
+```{r table, echo=TRUE}
+seurat_outdir <- file.path(getwd(), params$seurat_dir)
+gene_matrix <- ReadMtx(paste0(seurat_outdir, "/isoforms_seurat/matrix.mtx"),
+                  features = paste0(seurat_outdir, "/isoforms_seurat/genes.tsv"),
+                  cells = paste0(seurat_outdir, "/isoforms_seurat/barcodes.tsv"),
+                  )
+
+saturation_tsv <- params$saturation_file
+
+seurat_df <- CreateSeuratObject(counts = gene_matrix, project="IsoSeq_Isoform", 
+                                min.cells = 1, min.features = 0)
+
+Total_reads <- sum(seurat_df@meta.data$nCount_RNA)
+Mean_reads_per_cell <- mean(seurat_df@meta.data$nCount_RNA)
+Total_number_of_cells <- length(seurat_df@meta.data$nCount_RNA)
+Median_genes_per_cell <- median(seurat_df@meta.data$nFeature_RNA)
+
+df_qc <- data.frame(
+    Metrics = c("Total reads", "Mean reads per cell", "Total number of cells", "Median genes per cell"),
+    Values = c(Total_reads, Mean_reads_per_cell, Total_number_of_cells, Median_genes_per_cell)
+)
+
+pander(df_qc)
+```
+</br>
+
+**Barcode Rank plot is also created**
+```{r knee_plot, echo=TRUE, warning=FALSE, message=FALSE, fig.width=6, fig.height=3,fig.path='Seurat_Report_gen_plots/'}
+seurat_df <- CalculateBarcodeInflections(seurat_df)
+BarcodeInflectionsPlot(seurat_df) + labs( y = "log10(nCount_RNA)", x = "UMI Rank")
+```
+</br>
+
+**Sequence Saturation Plot** </br>
+```{r seq_saturation, echo=TRUE, warning=FALSE, message=FALSE, fig.width=6, fig.height=3,fig.path='Seurat_Report_Gene_plots/'}
+df_sat <- read.table(saturation_tsv, header = T)
+df_sat <- df_sat[,c("reads","unique_isoforms", "unique_isoforms_known")]
+df_long <- pivot_longer(df_sat, cols = -reads, names_to = "variable", values_to = "value")
+ggplot(df_long, aes(x = reads, y = value, color = variable)) +
+  geom_line() +
+  labs(x = "Reads", y = "Counts") +
+  theme_minimal()
+
+```
+
+**Violin Plots for counts features, mt, and ribo:** </br>
+
+```{r QCplot-violin, echo=TRUE, warning=FALSE, message=FALSE, fig.width=7, fig.height=10,fig.path='Seurat_Report_ISO_plots/'}
+seurat_df[["percent.mt"]] <- PercentageFeatureSet(seurat_df, pattern = "^mt:")
+seurat_df[["percent.ribo"]] <- PercentageFeatureSet(seurat_df, pattern = "^Rp[SL]|^mRp[SL]")
+
+VlnPlot(seurat_df, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), 
+        ncol = 2)
+
+seurat_df <- subset(seurat_df, subset = nFeature_RNA > 200 & percent.mt < 5 & percent.ribo < 5 ) # a light filter
+```
+
+nFeature_RNA > 200 & percent.mt < 5 & percent.ribo < 5 were used to lightly filter the data. New metrics after data filtering are shown in the table below:
+</br>
+```{r table_filter, echo=TRUE}
+Total_reads <- sum(seurat_df@meta.data$nCount_RNA)
+Mean_reads_per_cell <- mean(seurat_df@meta.data$nCount_RNA)
+Total_number_of_cells <- length(seurat_df@meta.data$nCount_RNA)
+Median_genes_per_cell <- median(seurat_df@meta.data$nFeature_RNA)
+
+df_qc <- data.frame(
+    Metrics = c("Total reads","Mean reads per cell", "Total number of cells", "Median genes per cell"),
+    Values = c(Total_reads,Mean_reads_per_cell, Total_number_of_cells, Median_genes_per_cell)
+)
+
+pander(df_qc)
+```
+
+</br>
+</br>
+
+## Inital Seurat analysis
+
+**Lets look at the Correlation between number of counts to number of features:** 
+</br>
+```{r Correlation-count-feature, echo=TRUE, warning=FALSE, message=FALSE, fig.width=7, fig.height=7,fig.path='Seurat_Report_ISO_plots/'}
+FeatureScatter(seurat_df, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+```
+</br>
+
+All results seem to pass our standards. Next we normalize data using SCTransform.</br>
+```{r SCTransform, echo=TRUE, message=FALSE, results="hide", warning=FALSE}
+
+seurat_df <- SCTransform(object=seurat_df, vst.flavor="v2", conserve.memory=T, verbose=F, return.only.var.genes=F)
+saveRDS(seurat_df, file = "SeuratObj.isoforms.rds")
+
+```
+</br>
+
+**Plot variable features:**
+</br>
+```{r variable_features, echo=TRUE, warning=FALSE, message=FALSE, fig.width=14, fig.height=7,fig.path='Seurat_Report_ISO_plots/'}
+top10 <- head(VariableFeatures(seurat_df), 10)
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_df)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+</br>
+
+**Run PCA analysis and look at elbow plot for dimention selection:** </br>
+
+```{r runPCA_elbowPlot, echo=TRUE, warning=FALSE, message=FALSE, fig.width=7, fig.height=7,fig.path='Seurat_Report_ISO_plots/'}
+# PCA
+all.genes <- rownames(seurat_df)
+seurat_df <- RunPCA(seurat_df, features = VariableFeatures(object = seurat_df))
+# Look at important PC:
+ElbowPlot(seurat_df, ndims = 50)
+```
+</br>
+
+**Based on elbow plot above, dim 30 was chosen for UMAP below:**
+</br>
+```{r UMAP_dimplot, echo=TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=10,fig.path='Seurat_Report_ISO_plots/'}
+# Choose cut-off based on elbow plot
+seurat_df <- FindNeighbors(seurat_df, dims = 1:30)
+seurat_df <- FindClusters(seurat_df, resolution = 0.8)
+# UMAP
+seurat_df <- RunUMAP(seurat_df, dims = 1:30)
+DimPlot(seurat_df, reduction = "umap")
+```
+
+</br>
+</br>
+
+## Find Marker Genes
+```{r marker_genes, echo=TRUE, warning=FALSE, message=FALSE, fig.width=14, fig.height=9,fig.path='Seurat_Report_ISO_plots/'}
+# Find marker genes for each cluster
+seurat.marker <-FindAllMarkers(seurat_df, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+# Top 5 marker genes in each cluster
+ordered_markers <- seurat.marker |>
+    group_by(cluster) |>
+    # Top 5 markers in each cluster
+    slice_max(n = 5, order_by = avg_log2FC)
+
+# Plot marker genes with heatmap or dotplot
+DoHeatmap(seurat_df, features = ordered_markers$gene) + 
+    NoLegend()
+DotPlot(seurat_df, features = unique(ordered_markers$gene)) +
+    RotatedAxis()
+```
+</br>
